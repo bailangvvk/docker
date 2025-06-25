@@ -1,20 +1,15 @@
-FROM alpine:latest AS builder
+# 使用 busybox 作为基础镜像
+FROM busybox:1.35-uclibc AS builder
 ARG NGINX_VERSION ZSTD_VERSION
 
-# Set working directory
+# 设置工作目录
 WORKDIR /usr/src
 
-# Install build dependencies
-RUN apk add --no-cache \
-        pcre-dev zlib-dev openssl-dev wget git build-base brotli-dev \
-        libxml2-dev libxslt-dev curl-dev yajl-dev lmdb-dev geoip-dev lua-dev \
-        automake autoconf libtool pkgconfig linux-headers pcre2-dev
-
-# Download and extract NGINX
+# 安装编译所需的依赖
 RUN wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz \
     && tar -zxf nginx-${NGINX_VERSION}.tar.gz
 
-# Clone necessary modules
+# 下载和安装必要的模块（例如 ModSecurity 和 Zstd）
 RUN git clone --recurse-submodules -j8 https://github.com/google/ngx_brotli \
     && git clone --depth 1 https://github.com/owasp-modsecurity/ModSecurity \
     && cd ModSecurity \
@@ -31,28 +26,33 @@ RUN git clone --recurse-submodules -j8 https://github.com/google/ngx_brotli \
     && make clean && CFLAGS="-fPIC" make && make install \
     && cd ..
 
-# Clone Zstandard NGINX module
-RUN git clone --depth=10 https://github.com/tokers/zstd-nginx-module.git
-
-# Configure and build NGINX with modules
+# 配置和静态编译 NGINX
 RUN cd nginx-${NGINX_VERSION} && \
     ./configure --with-compat \
                 --add-dynamic-module=../ngx_brotli \
                 --add-dynamic-module=../ModSecurity-nginx \
-                --add-dynamic-module=../zstd-nginx-module && \
-    make modules \
-    && mkdir -p /usr/src/nginx-modules \
-    && mv objs/*.so /usr/src/nginx-modules/ \
-    && rm -rf /usr/src/*  # Clean temporary files
+                --add-dynamic-module=../zstd-nginx-module \
+                --with-static-module=ngx_http_zstd_filter_module \
+                --with-static-module=ngx_http_modsecurity_module \
+                --without-http_rewrite_module \
+                --without-http_gzip_module \
+                --without-http_ssl_module \
+                --with-pcre-jit \
+                --with-openssl=/usr/local/openssl \
+                --prefix=/usr/local/nginx --with-cc-opt="-static" \
+                --with-ld-opt="-static" && \
+    make -j$(nproc) && make install
 
-FROM nginx:alpine
-ARG NGINX_VERSION CORERULESET_VERSION
+# 创建一个最终的静态镜像
+FROM busybox:1.35-uclibc
 
-# Copy compiled modules and ModSecurity
-COPY --from=builder /usr/src/nginx-modules/*.so /etc/nginx/modules/
-COPY --from=builder /usr/local/modsecurity/lib/* /usr/lib/
+# 复制静态编译的 NGINX 和相关模块
+COPY --from=builder /usr/local/nginx /usr/local/nginx
 
-# Create config directory and download necessary files
+# 复制 ModSecurity 的相关文件
+COPY --from=builder /usr/local/modsecurity /usr/local/modsecurity
+
+# 创建配置文件目录，并下载必要的配置文件
 RUN mkdir -p /etc/nginx/modsec/plugins \
     && wget https://github.com/coreruleset/coreruleset/archive/v${CORERULESET_VERSION}.tar.gz \
     && tar -xzf v${CORERULESET_VERSION}.tar.gz --strip-components=1 -C /etc/nginx/modsec \
