@@ -1,7 +1,7 @@
 FROM alpine:latest AS builder
 ARG NGINX_VERSION ZSTD_VERSION
 
-# Set the working directory
+# Set working directory
 WORKDIR /usr/src
 
 # Install build dependencies
@@ -14,7 +14,7 @@ RUN apk add --no-cache \
 RUN wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz \
     && tar -zxf nginx-${NGINX_VERSION}.tar.gz
 
-# Clone and build Brotli and ModSecurity
+# Clone necessary modules
 RUN git clone --recurse-submodules -j8 https://github.com/google/ngx_brotli \
     && git clone --depth 1 https://github.com/owasp-modsecurity/ModSecurity \
     && cd ModSecurity \
@@ -41,13 +41,15 @@ RUN cd nginx-${NGINX_VERSION} && \
                 --add-dynamic-module=../ModSecurity-nginx \
                 --add-dynamic-module=../zstd-nginx-module && \
     make modules \
-    && rm -rf /usr/src/* # Clean temporary files
+    && mkdir -p /usr/src/nginx-modules \
+    && mv objs/*.so /usr/src/nginx-modules/ \
+    && rm -rf /usr/src/*  # Clean temporary files
 
 FROM nginx:alpine
 ARG NGINX_VERSION CORERULESET_VERSION
 
 # Copy compiled modules and ModSecurity
-COPY --from=builder /usr/src/nginx-${NGINX_VERSION}/objs/*.so /etc/nginx/modules/
+COPY --from=builder /usr/src/nginx-modules/*.so /etc/nginx/modules/
 COPY --from=builder /usr/local/modsecurity/lib/* /usr/lib/
 
 # Create config directory and download necessary files
