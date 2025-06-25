@@ -1,18 +1,20 @@
 FROM alpine:latest AS builder
 ARG NGINX_VERSION ZSTD_VERSION
 
-# 安装构建依赖并清理临时文件
+# Set the working directory
+WORKDIR /usr/src
+
+# Install build dependencies
 RUN apk add --no-cache \
         pcre-dev zlib-dev openssl-dev wget git build-base brotli-dev \
         libxml2-dev libxslt-dev curl-dev yajl-dev lmdb-dev geoip-dev lua-dev \
-        automake autoconf libtool pkgconfig linux-headers pcre2-dev \
-    && WORKDIR /usr/src
+        automake autoconf libtool pkgconfig linux-headers pcre2-dev
 
-# 下载并解压 NGINX
+# Download and extract NGINX
 RUN wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz \
     && tar -zxf nginx-${NGINX_VERSION}.tar.gz
 
-# 克隆并编译 Brotli 和 ModSecurity
+# Clone and build Brotli and ModSecurity
 RUN git clone --recurse-submodules -j8 https://github.com/google/ngx_brotli \
     && git clone --depth 1 https://github.com/owasp-modsecurity/ModSecurity \
     && cd ModSecurity \
@@ -29,26 +31,26 @@ RUN git clone --recurse-submodules -j8 https://github.com/google/ngx_brotli \
     && make clean && CFLAGS="-fPIC" make && make install \
     && cd ..
 
-# 克隆 Zstandard NGINX 模块
+# Clone Zstandard NGINX module
 RUN git clone --depth=10 https://github.com/tokers/zstd-nginx-module.git
 
-# 配置并编译 NGINX
+# Configure and build NGINX with modules
 RUN cd nginx-${NGINX_VERSION} && \
     ./configure --with-compat \
                 --add-dynamic-module=../ngx_brotli \
                 --add-dynamic-module=../ModSecurity-nginx \
                 --add-dynamic-module=../zstd-nginx-module && \
     make modules \
-    && rm -rf /usr/src/* # 清理临时文件
+    && rm -rf /usr/src/* # Clean temporary files
 
 FROM nginx:alpine
 ARG NGINX_VERSION CORERULESET_VERSION
 
-# 复制已编译的模块和 ModSecurity
+# Copy compiled modules and ModSecurity
 COPY --from=builder /usr/src/nginx-${NGINX_VERSION}/objs/*.so /etc/nginx/modules/
 COPY --from=builder /usr/local/modsecurity/lib/* /usr/lib/
 
-# 创建配置目录并下载必要文件
+# Create config directory and download necessary files
 RUN mkdir -p /etc/nginx/modsec/plugins \
     && wget https://github.com/coreruleset/coreruleset/archive/v${CORERULESET_VERSION}.tar.gz \
     && tar -xzf v${CORERULESET_VERSION}.tar.gz --strip-components=1 -C /etc/nginx/modsec \
